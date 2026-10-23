@@ -26,11 +26,20 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
           npm install -g cordova
           cordova create app com.company.smssender SmsSender
+          
           find . -maxdepth 2 -name "index.html" -not -path "./app/*" -exec cp {} app/www/index.html \;
+          sed -i 's/accept="[^"]*"//g' app/www/index.html
+          
+          curl -L https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js -o app/www/xlsx.full.min.js
+          sed -i 's|https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js|xlsx.full.min.js|g' app/www/index.html
+          
           cd app
           cordova platform add android@12.0.1
           cordova plugin add cordova-sms-plugin
           cordova plugin add cordova-plugin-androidx-adapter
+          
+          sed -i '/<\/manifest>/i <uses-permission android:name="android.permission.SEND_SMS" />\n<uses-permission android:name="android.permission.READ_PHONE_STATE" />' platforms/android/app/src/main/AndroidManifest.xml
+          
           echo "android.useAndroidX=true" >> platforms/android/gradle.properties
           echo "android.enableJetifier=true" >> platforms/android/gradle.properties
           cordova build android --debug
