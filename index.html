@@ -1,0 +1,295 @@
+﻿<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>مرسل الرسائل التلقائي للموظفين</title>
+    
+    <!-- استدعاء ملف كوردوفا الأساسي -->
+    <script src="cordova.js"></script>
+    <!-- مكتبة قراءة ملفات الإكسل -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <style>
+        body { font-family: Tahoma, sans-serif; padding: 15px; background: #f4f6f9; color: #333; margin: 0; user-select: none; }
+        .box { background: #fff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        label { font-weight: bold; display: block; margin-bottom: 5px; font-size: 14px; }
+        input[type="file"], input[type="number"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-family: inherit; margin-bottom: 10px; }
+        button { font-family: inherit; transition: 0.2s; }
+        button:active { transform: scale(0.98); }
+        button.main-btn { background: #0066cc; color: #fff; border: none; padding: 12px; width: 100%; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; margin-bottom: 10px; }
+        button.bulk-btn { background: #ff8800; color: #fff; border: none; padding: 12px; width: 100%; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; }
+        button.stop-btn { background: #dc3545; color: #fff; border: none; padding: 12px; width: 100%; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; display: none; margin-top: 8px; }
+        .item { background: #fff; padding: 12px; margin-bottom: 8px; border-radius: 8px; border-right: 4px solid #0066cc; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        .item.sent { border-right-color: #28a745; background: #f8f9fa; opacity: 0.8; }
+        .item.failed { border-right-color: #dc3545; background: #fff5f5; }
+        .send-btn { background: #28a745; color: #fff; border: none; padding: 8px 15px; border-radius: 5px; font-weight: bold; white-space: nowrap; margin-right: 10px; cursor: pointer; font-size: 14px; }
+        .stats { background: #e9ecef; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-weight: bold; text-align: center; color: #495057; position: sticky; top: 5px; z-index: 100; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .actions-bar { display: flex; gap: 10px; margin-bottom: 15px; }
+        .file-box { background: #e8f5e9; border: 2px dashed #a5d6a7; padding: 12px; border-radius: 6px; margin-bottom: 10px; text-align: center; }
+        .msg-preview { font-size: 13px; color: #555; background: #f1f3f5; padding: 6px; border-radius: 4px; margin-top: 4px; line-height: 1.4; }
+        .status-badge { font-size: 12px; padding: 3px 6px; border-radius: 4px; display: inline-block; margin-top: 4px; }
+    </style>
+</head>
+<body>
+
+    <div class="box">
+        <label>1. اختر ملف الإكسل (الاسم، رقم التلفون، النص):</label>
+        <div class="file-box">
+            <input type="file" id="excelFile" accept=".xlsx, .xls, .csv" onchange="handleExcelFile(this)">
+            <small style="color: #2e7d32; display: block; margin-top: 5px;">(يقرأ الأعمدة الثلاثة الأولى تلقائياً)</small>
+        </div>
+
+        <button class="main-btn" onclick="manualRefresh()">إعادة ضبط وتحديث القائمة</button>
+
+        <label>2. الفاصل الزمني بين كل رسالة (بالثواني):</label>
+        <input type="number" id="interval" value="5" min="1">
+        
+        <div class="actions-bar">
+            <button style="background:#6c757d; color:white; border:none; padding:8px; border-radius:5px; flex:1; cursor:pointer;" onclick="selectAll(true)">تحديد الكل</button>
+            <button style="background:#6c757d; color:white; border:none; padding:8px; border-radius:5px; flex:1; cursor:pointer;" onclick="selectAll(false)">إلغاء التحديد</button>
+        </div>
+        
+        <button id="startBtn" class="bulk-btn" onclick="startSequentialSend()">بدء الإرسال التلقائي المباشر</button>
+        <button id="stopBtn" class="stop-btn" onclick="stopSending()">إيقاف الإرسال الفوري ⏹</button>
+    </div>
+
+    <div id="stats" class="stats">الإجمالي: 0 | تم الإرسال: 0 | فشل: 0</div>
+    <div id="list"></div>
+
+    <script>
+        let globalRows = [];
+        let lastLoadedWorkbook = null;
+        let sentSet = new Set();
+        let failedSet = new Set();
+        let isSending = false;
+        let sendTimeout = null;
+
+        document.addEventListener('deviceready', function() {
+            if (window.sms) {
+                window.sms.hasPermission(function(hasPermission) {
+                    if (!hasPermission) {
+                        window.sms.requestPermission(function() {
+                            console.log('تم منح صلاحية الإرسال');
+                        }, function(err) {
+                            alert('يرجى منح التطبيق صلاحية إرسال الرسائل النصية ليعمل بشكل تلقائي.');
+                        });
+                    }
+                });
+            }
+        }, false);
+
+        function handleExcelFile(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    lastLoadedWorkbook = XLSX.read(data, { type: 'array' });
+                    parseWorkbook(lastLoadedWorkbook);
+                } catch (error) {
+                    alert('حدث خطأ أثناء قراءة ملف الإكسل. تأكد من سلامة الملف.');
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function parseWorkbook(workbook) {
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const jsonRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            
+            globalRows = [];
+            sentSet.clear();
+            failedSet.clear();
+
+            for (let i = 1; i < jsonRows.length; i++) {
+                let row = jsonRows[i];
+                if (row && row.length >= 2) {
+                    let name = row[0] ? String(row[0]).trim() : '';
+                    let phone = row[1] ? String(row[1]).trim() : '';
+                    let textMsg = row[2] ? String(row[2]).trim() : '';
+                    
+                    if (name && phone) {
+                        globalRows.push({ name, phone, textMsg });
+                    }
+                }
+            }
+            renderList();
+        }
+
+        function manualRefresh() {
+            if (isSending) {
+                alert('يرجى إيقاف الإرسال التلقائي أولاً.');
+                return;
+            }
+            if (lastLoadedWorkbook) {
+                parseWorkbook(lastLoadedWorkbook);
+            } else {
+                alert('يرجى اختيار ملف الإكسل أولاً.');
+            }
+        }
+
+        function renderList() {
+            const listDiv = document.getElementById('list');
+            listDiv.innerHTML = '';
+
+            if (globalRows.length === 0) {
+                updateStats();
+                return;
+            }
+
+            globalRows.forEach((row, index) => {
+                const item = document.createElement('div');
+                item.className = 'item';
+                item.id = `item-${index}`;
+                item.innerHTML = `
+                    <div style="display: flex; align-items: flex-start; flex-grow: 1; margin-left: 10px;">
+                        <input type="checkbox" class="row-checkbox" data-index="${index}" style="width:20px; height:20px; margin-left:10px; margin-top:5px;" checked>
+                        <div style="flex-grow: 1;">
+                            <strong>${index + 1}. ${row.name}</strong> <span dir="ltr">(${row.phone})</span>
+                            <div class="msg-preview">${row.textMsg}</div>
+                            <div id="status-${index}" class="status-badge"></div>
+                        </div>
+                    </div>
+                    <button id="btn-${index}" class="send-btn" onclick="sendSingle(${index})">إرسال</button>
+                `;
+                listDiv.appendChild(item);
+            });
+            updateStats();
+        }
+
+        function selectAll(status) {
+            const checkboxes = document.querySelectorAll('.row-checkbox');
+            checkboxes.forEach(cb => cb.checked = status);
+        }
+
+        function sendDirectSMS(phone, message, onSuccess, onError) {
+            if (window.sms) {
+                var options = {
+                    replaceLineBreaks: true,
+                    android: {
+                        intent: ''
+                    }
+                };
+                window.sms.send(phone, message, options, onSuccess, onError);
+            } else {
+                window.location.href = `sms:${phone}?body=${encodeURIComponent(message)}`;
+                setTimeout(onSuccess, 500);
+            }
+        }
+
+        function sendSingle(index) {
+            const row = globalRows[index];
+            const btn = document.getElementById(`btn-${index}`);
+            btn.disabled = true;
+            btn.innerText = 'جاري الإرسال...';
+
+            sendDirectSMS(row.phone, row.textMsg, function() {
+                markStatus(index, 'sent');
+            }, function(err) {
+                markStatus(index, 'failed', err);
+            });
+        }
+
+        function markStatus(index, status, errorMsg = '') {
+            const el = document.getElementById(`item-${index}`);
+            const btn = document.getElementById(`btn-${index}`);
+            const badge = document.getElementById(`status-${index}`);
+            const cb = el.querySelector('.row-checkbox');
+
+            if (status === 'sent') {
+                sentSet.add(index);
+                failedSet.delete(index);
+                el.className = 'item sent';
+                btn.style.background = '#6c757d';
+                btn.innerText = 'تم الإرسال ✓';
+                btn.disabled = true;
+                cb.checked = false;
+                badge.innerText = '';
+            } else if (status === 'failed') {
+                failedSet.add(index);
+                el.className = 'item failed';
+                btn.style.background = '#dc3545';
+                btn.innerText = 'إعادة المحاولة';
+                btn.disabled = false;
+                badge.style.color = '#dc3545';
+                badge.innerText = 'فشل الإرسال: ' + (errorMsg || 'تأكد من الرصيد أو التغطية');
+            }
+            updateStats();
+        }
+
+        function startSequentialSend() {
+            if (isSending) return;
+
+            const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
+            if (checkedBoxes.length === 0) {
+                alert('يرجى تحديد موظف واحد على الأقل من القائمة.');
+                return;
+            }
+
+            let targetsIndices = [];
+            checkedBoxes.forEach(cb => {
+                targetsIndices.push(parseInt(cb.getAttribute('data-index')));
+            });
+
+            let delaySec = parseInt(document.getElementById('interval').value) || 5;
+            let currentPos = 0;
+            
+            isSending = true;
+            document.getElementById('startBtn').style.display = 'none';
+            document.getElementById('stopBtn').style.display = 'block';
+
+            function processNext() {
+                if (!isSending || currentPos >= targetsIndices.length) {
+                    stopSending();
+                    if (currentPos >= targetsIndices.length) {
+                        alert('اكتملت عملية الإرسال التلقائي للقائمة المحددة!');
+                    }
+                    return;
+                }
+
+                let rowIndex = targetsIndices[currentPos];
+                let target = globalRows[rowIndex];
+                
+                const btn = document.getElementById(`btn-${rowIndex}`);
+                if (btn) btn.innerText = 'جاري الإرسال...';
+
+                sendDirectSMS(target.phone, target.textMsg, function() {
+                    markStatus(rowIndex, 'sent');
+                    currentPos++;
+                    if (isSending && currentPos < targetsIndices.length) {
+                        sendTimeout = setTimeout(processNext, delaySec * 1000);
+                    } else {
+                        processNext();
+                    }
+                }, function(err) {
+                    markStatus(rowIndex, 'failed', err);
+                    currentPos++;
+                    if (isSending && currentPos < targetsIndices.length) {
+                        sendTimeout = setTimeout(processNext, delaySec * 1000);
+                    } else {
+                        processNext();
+                    }
+                });
+            }
+
+            processNext();
+        }
+
+        function stopSending() {
+            isSending = false;
+            if (sendTimeout) clearTimeout(sendTimeout);
+            document.getElementById('startBtn').style.display = 'block';
+            document.getElementById('stopBtn').style.display = 'none';
+        }
+
+        function updateStats() {
+            document.getElementById('stats').innerText = `الإجمالي: ${globalRows.length} | تم الإرسال: ${sentSet.size} | فشل: ${failedSet.size}`;
+        }
+    </script>
+</body>
+</html>
+
