@@ -16,6 +16,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '7.6.4'
+
       - name: Build Cordova APK
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
